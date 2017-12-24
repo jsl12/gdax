@@ -1,5 +1,12 @@
 import pandas as pd
 from datetime import datetime, timedelta
+from api_key import *
+
+
+def get_auth_client():
+    return gdax.AuthenticatedClient(KEY,
+                                    B64SECRET,
+                                    PASSPHRASE)
 
 
 def get_value_df(client):
