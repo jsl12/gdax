@@ -4,3 +4,4 @@ gdax.sublime-workspace
 gdax.sublime-project
 __pycache__/api_key.cpython-36.pyc
 .ipynb_checkpoints/*
+*.pyc
