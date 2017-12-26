@@ -1,4 +1,5 @@
 import pandas as pd
+import gdax
 from datetime import datetime, timedelta
 from api_key import *
 
@@ -125,7 +126,13 @@ def get_value_history(client, product, start, end=None, n=200):
 
 
 def get_performance_history(client, holding_row):
-    # Gets a
     df = get_value_history(client, holding_row.product_id, holding_row.name[1], 200)
     df = df * holding_row.amount
     return df
+
+
+if __name__ == '__main__':
+    def main():
+        ac = get_auth_client()
+        print(get_value_history(ac, 'BTC-USD', datetime.now() - timedelta(days=10)))
+    main()
