@@ -9,18 +9,6 @@ def get_auth_client():
                                     PASSPHRASE)
 
 
-def get_value_df(client):
-    df = get_history_df(client,
-                        get_account_df(client))
-    holdings = get_holdings(df)
-    holdings['price'] = [client.get_product_ticker(row.product_id)['price'] for i, row in holdings.iterrows()]
-    holdings['price'] = pd.to_numeric(holdings['price'])
-    holdings['value'] = holdings['price'] * holdings['amount']
-    holdings['abs_gain'] = holdings['payment'] + holdings['value']
-    holdings['gain_rate'] = (holdings['abs_gain'] / (-holdings['payment'])) * 100
-    return holdings
-
-
 def cols2nums(df, column_names):
     try:
         for c in column_names:
@@ -74,27 +62,35 @@ def get_history_df(client, account_df):
     df = pd.concat([df.drop(['details'], axis=1), df['details'].apply(pd.Series)], axis=1)
 
     # Add the payment column
-    df = payment_col(df)
+    df = add_payment_col(df)
     return df
 
 
-def payment_col(df):
-    holdings = get_holdings(df)
+def add_payment_col(df):
+    holdings = slice_holdings(df)
     holdings['payment'] = [findpayment(df, row) for i, row in holdings.iterrows()]
     df['payment'] = holdings['payment']
     return df
 
 
-def get_holdings(df):
+def slice_holdings(df):
     holdings = df.drop('USD', level=0)
     holdings = holdings[holdings['amount'] > 0]
     return holdings
 
 
+def get_value_df(df):
+    holdings = slice_holdings(df)
+    holdings['price'] = [client.get_product_ticker(row.product_id)['price'] for i, row in holdings.iterrows()]
+    holdings['price'] = pd.to_numeric(holdings['price'])
+    holdings['value'] = holdings['price'] * holdings['amount']
+    holdings['abs_gain'] = holdings['payment'] + holdings['value']
+    holdings['gain_rate'] = (holdings['abs_gain'] / (-holdings['payment'])) * 100
+    return holdings
+
+
 def findpayment(df, holding):
-    payments = df.loc['USD'][df.loc['USD']['amount'] < 0]
-    payments = payments[payments.trade_id == holding.trade_id]
-    return payments.amount.sum()
+    return df[df.trade_id == holding.trade_id].loc['USD'].amount.sum()
 
 
 def time_series(start, end, n):
@@ -109,9 +105,12 @@ def time_series(start, end, n):
     return res
 
 
-def get_value_history(client, product, start, n, end=None):
+def get_value_history(client, product, start, end=None, n=200):
     if end is None:
         end = datetime.now()
+
+    if n > 200:
+        n = 200
 
     gran = (end - start).total_seconds() / n
     values = client.get_product_historic_rates(product,
