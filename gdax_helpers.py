@@ -106,23 +106,53 @@ def time_series(start, end, n):
     return res
 
 
-def get_value_history(client, product, start, end=None, n=200):
+def get_value_history(client, product, start, end=None, gran=None):
+    values = []
+
     if end is None:
         end = datetime.now()
 
-    if n > 200:
-        n = 200
+    if gran is None or not isinstance(gran, timedelta):
+        gran = timedelta(days=1)
 
-    gran = (end - start).total_seconds() / n
-    values = client.get_product_historic_rates(product,
-                                               granularity=gran,
-                                               start=start.isoformat(),
-                                               end=end.isoformat())
-    df = pd.DataFrame(values)
-    df.columns = ['time', 'low', 'high', 'open', 'close', 'volume']
-    df['time'] = df['time'].apply(datetime.fromtimestamp)
-    df = df.set_index('time')
-    return df
+    gran = int(gran.total_seconds())
+    n = (end - start).total_seconds() / gran
+
+    if n > 200:
+        overflow = n % 200
+        n -= overflow
+        num_reqs = int(n / 200)
+
+        dt = timedelta(seconds=gran)
+        # print(num_reqs, dt)
+
+        temp_end = start + (200 * dt)
+        for i in range(num_reqs):
+            # print(start.strftime('%Y-%m-%d %H:%M:%S'))
+            # print(temp_end.strftime('%Y-%m-%d %H:%M:%S'))
+            values.extend(client.get_product_historic_rates(product,
+                                                            granularity=gran,
+                                                            start=start.isoformat(),
+                                                            end=temp_end.isoformat()))
+            start = temp_end
+            temp_end += (200 * dt)
+        temp_end = end
+        values.extend(client.get_product_historic_rates(product,
+                                                        granularity=gran,
+                                                        start=start.isoformat(),
+                                                        end=temp_end.isoformat()))
+    else:
+        values = client.get_product_historic_rates(product,
+                                                   granularity=gran,
+                                                   start=start.isoformat(),
+                                                   end=end.isoformat())
+
+    if values:
+        df = pd.DataFrame(values)
+        df.columns = ['time', 'low', 'high', 'open', 'close', 'volume']
+        df['time'] = df['time'].apply(datetime.fromtimestamp)
+        df = df.set_index('time')
+        return df.sort_index(axis=0)
 
 
 def get_performance_history(client, holding_row):
@@ -134,5 +164,6 @@ def get_performance_history(client, holding_row):
 if __name__ == '__main__':
     def main():
         ac = get_auth_client()
-        print(get_value_history(ac, 'BTC-USD', datetime.now() - timedelta(days=10)))
+        print(get_value_history(ac, 'BTC-USD', datetime.now() - timedelta(hours=3), gran=timedelta(seconds=60)))
+        print(ac.get_time())
     main()
