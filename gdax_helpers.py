@@ -80,7 +80,7 @@ def slice_holdings(df):
     return holdings
 
 
-def get_value_df(df):
+def get_value_df(client, df):
     holdings = slice_holdings(df)
     holdings['price'] = [client.get_product_ticker(row.product_id)['price'] for i, row in holdings.iterrows()]
     holdings['price'] = pd.to_numeric(holdings['price'])
@@ -116,12 +116,12 @@ def get_value_history(client, product, start, end=None, gran=None):
         gran = timedelta(days=1)
 
     gran = int(gran.total_seconds())
-    n = (end - start).total_seconds() / gran
+    num_results = (end - start).total_seconds() / gran
 
-    if n > 200:
-        overflow = n % 200
-        n -= overflow
-        num_reqs = int(n / 200)
+    if num_results > 200:
+        overflow = num_results % 200
+        num_results -= overflow
+        num_reqs = int(num_results / 200)
 
         dt = timedelta(seconds=gran)
         # print(num_reqs, dt)
@@ -155,8 +155,8 @@ def get_value_history(client, product, start, end=None, gran=None):
         return df.sort_index(axis=0)
 
 
-def get_performance_history(client, holding_row):
-    df = get_value_history(client, holding_row.product_id, holding_row.name[1], 200)
+def get_performance_history(client, holding_row, hour_res=6):
+    df = get_value_history(client, holding_row.product_id, holding_row.name[1], gran=timedelta(hours=hour_res))
     df = df * holding_row.amount
     return df
 
