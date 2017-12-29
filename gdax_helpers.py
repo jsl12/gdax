@@ -1,6 +1,9 @@
 import pandas as pd
+import os
+from pathlib import Path
 import gdax
 from datetime import datetime, timedelta
+import time
 from api_key import *
 
 
@@ -57,9 +60,9 @@ def get_history_df(client, account_df):
 
     # Convert into a single multi-indexed dataframe
     df = pd.concat([hist[acc] for acc in hist],
-               keys=list(hist.keys()))
+                   keys=list(hist.keys()))
 
-   # Expand the details column
+    # Expand the details column
     df = pd.concat([df.drop(['details'], axis=1), df['details'].apply(pd.Series)], axis=1)
 
     # Add the payment column
@@ -106,8 +109,8 @@ def time_series(start, end, n):
     return res
 
 
-def get_value_history(client, product, start, end=None, gran=None):
-    values = []
+def get_value_history(client, product, start, end=None, gran=None, sleep_time=.5):
+    df = pd.DataFrame()
 
     if end is None:
         end = datetime.now()
@@ -118,44 +121,57 @@ def get_value_history(client, product, start, end=None, gran=None):
     gran = int(gran.total_seconds())
     num_results = (end - start).total_seconds() / gran
 
-    if num_results > 200:
-        overflow = num_results % 200
-        num_results -= overflow
-        num_reqs = int(num_results / 200)
+    try:
+        if num_results > 200:
+            overflow = num_results % 200
+            num_results -= overflow
+            num_reqs = int(num_results / 200)
 
-        dt = timedelta(seconds=gran)
-        # print(num_reqs, dt)
+            dt = timedelta(seconds=gran)
+            # print(num_reqs, dt)
 
-        temp_end = start + (200 * dt)
-        for i in range(num_reqs):
-            # print(start.strftime('%Y-%m-%d %H:%M:%S'))
-            # print(temp_end.strftime('%Y-%m-%d %H:%M:%S'))
-            values.extend(client.get_product_historic_rates(product,
-                                                            granularity=gran,
-                                                            start=start.isoformat(),
-                                                            end=temp_end.isoformat()))
-            start = temp_end
-            temp_end += (200 * dt)
-        temp_end = end
-        values.extend(client.get_product_historic_rates(product,
-                                                        granularity=gran,
-                                                        start=start.isoformat(),
-                                                        end=temp_end.isoformat()))
-    else:
-        values = client.get_product_historic_rates(product,
-                                                   granularity=gran,
-                                                   start=start.isoformat(),
-                                                   end=end.isoformat())
+            temp_end = start + (200 * dt)
+            for i in range(num_reqs):
+                print(start.strftime('%Y-%m-%d %H:%M:%S'))
+                # print(temp_end.strftime('%Y-%m-%d %H:%M:%S'))
+                values = client.get_product_historic_rates(product,
+                                                           granularity=gran,
+                                                           start=start.isoformat(),
+                                                           end=temp_end.isoformat())
+                df = pd.concat([df, pd.DataFrame(values)])
 
-    if values:
-        df = pd.DataFrame(values)
+                start = temp_end
+                temp_end += (200 * dt)
+
+                # Needed to avoid hitting the rate limit
+                if num_reqs > 5:
+                    time.sleep(sleep_time)
+            temp_end = end
+            values = client.get_product_historic_rates(product,
+                                                       granularity=gran,
+                                                       start=start.isoformat(),
+                                                       end=temp_end.isoformat())
+            df = pd.concat([df, pd.DataFrame(values)])
+        else:
+            df = pd.DataFrame(
+                client.get_product_historic_rates(product,
+                                                  granularity=gran,
+                                                  start=start.isoformat(),
+                                                  end=end.isoformat()))
+
         df.columns = ['time', 'low', 'high', 'open', 'close', 'volume']
         df['time'] = df['time'].apply(datetime.fromtimestamp)
         df = df.set_index('time')
-        return df.sort_index(axis=0)
+        df = df.sort_index(axis=0)
+        return df
+    except ValueError as e:
+                print(e, type(values))
+                if isinstance(values, list):
+                    print('length: {}'.format(len(values)))
+                print(values)
 
 
-def get_performance_history(client, holding_row, hour_res=6):
+def get_performance_history(client, holding_row, hour_res=1):
     df = get_value_history(client, holding_row.product_id, holding_row.name[1], gran=timedelta(hours=hour_res))
     df = df * holding_row.amount
     return df
@@ -164,6 +180,7 @@ def get_performance_history(client, holding_row, hour_res=6):
 if __name__ == '__main__':
     def main():
         ac = get_auth_client()
-        print(get_value_history(ac, 'BTC-USD', datetime.now() - timedelta(hours=3), gran=timedelta(seconds=60)))
         print(ac.get_time())
+        df = get_value_history(ac, 'BTC-USD', datetime.now() - timedelta(days=60), gran=timedelta(hours=1))
+        print(df)
     main()
