@@ -219,6 +219,7 @@ def get_value_history(client, product, start, end=None, gran=None, sleep_time=.5
 
 def get_performance_history(client, holding_row, hour_res=1):
     df = get_value_history(client, holding_row.product_id, holding_row.name[1], gran=timedelta(hours=hour_res))
+    df = df[df.index > holding_row.name[1]]
     df = df * holding_row.amount
     return df
 
