@@ -247,7 +247,7 @@ def load_price_data(product, filename='prices.h5'):
         df = pd.read_hdf(filename, product.replace('-', ''))
         return df
     except KeyError as e:
-        print('{}} not found'.format(product))
+        print('{} not found'.format(product))
         pass
     except FileNotFoundError as e:
         print('{} not found'.format(filename))
