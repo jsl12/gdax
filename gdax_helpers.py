@@ -110,13 +110,15 @@ def time_series(start, end, n):
 
 
 def get_value_history(client, product, start, end=None, gran=None, sleep_time=.5):
+    # df = check_for_price_data(product)
+    # if df is None:
     df = pd.DataFrame()
 
     if end is None:
-        end = datetime.now()
+        end = datetime.now().replace(microsecond=0, second=0, minute=0)
 
     if gran is None or not isinstance(gran, timedelta):
-        gran = timedelta(days=1)
+        gran = timedelta(hours=1)
 
     gran = int(gran.total_seconds())
     num_results = (end - start).total_seconds() / gran
@@ -128,7 +130,7 @@ def get_value_history(client, product, start, end=None, gran=None, sleep_time=.5
             num_reqs = int(num_results / 200)
 
             dt = timedelta(seconds=gran)
-            # print(num_reqs, dt)
+            print('{} requests, time per request: {}'.format(num_reqs, dt))
 
             temp_end = start + (200 * dt)
             for i in range(num_reqs):
@@ -177,10 +179,38 @@ def get_performance_history(client, holding_row, hour_res=1):
     return df
 
 
+def store_price_data(data, product, filename='prices.h5'):
+    assert isinstance(data, pd.DataFrame), 'data is not a dataframe: {}'.format(type(data))
+    assert isinstance(product, str), 'invalid product: {}'.format(type(product))
+    assert isinstance(filename, str), 'invalid filename : {}'.format(type(filename))
+    p = Path(os.getcwd()) / filename
+    product = product.replace('-', '')
+    print('storing {} in {}'.format(product, p))
+    data.to_hdf(p, product)
+
+
+def load_price_data(product, filename='prices.h5'):
+    assert isinstance(product, str), 'invalid product: {}'.format(type(product))
+    assert isinstance(filename, str), 'invalid filename : {}'.format(type(filename))
+    try:
+        df = pd.read_hdf(filename, product.replace('-', ''))
+        print('loaded {} from {}'.format(product, filename))
+        return df
+    except KeyError as e:
+        print('{}} not found'.format(product))
+        pass
+    except FileNotFoundError as e:
+        print('{} not found'.format(filename))
+        pass
+
+
 if __name__ == '__main__':
     def main():
         ac = get_auth_client()
         print(ac.get_time())
-        df = get_value_history(ac, 'BTC-USD', datetime.now() - timedelta(days=60), gran=timedelta(hours=1))
+        prod = 'BTC-USD'
+        df = get_value_history(ac, prod, datetime.now() - timedelta(days=60), gran=timedelta(hours=1))
         print(df)
+        store_price_data(df, prod)
+        print(check_for_price_data(prod).info())
     main()
