@@ -109,45 +109,67 @@ def time_series(start, end, n):
     return res
 
 
-def get_value_history(client, product, start, end=None, gran=None, sleep_time=.5):
-    # df = check_for_price_data(product)
-    # if df is None:
-    df = pd.DataFrame()
+def round_time(time):
+    # Converts the time to only have hours
+    assert isinstance(time, datetime), 'time is not a datetime object: {}'.format(type(time))
+    return time.replace(minute=0, second=0, microsecond=0)
 
+
+def get_value_history(client, product, start, end=None, gran=None, sleep_time=.5, load=True):
+    # Check for existing data
+    if load:
+        df = load_price_data(product)
+        if df is None:
+            df = pd.DataFrame()
+        else:
+            print('found {} data'.format(product))
+            print('from {}\nto   {}'.format(df.index[0], df.index[-1]))
+    else:
+        df = pd.DataFrame()
+
+    # Rounds the incoming data
     if end is None:
-        end = datetime.now().replace(microsecond=0, second=0, minute=0)
+        end = round_time(datetime.now())
+    else:
+        end = round_time(end)
+    start = round_time(start)
 
+    # Sets the granularity
+    def_gran = timedelta(hours=1)
     if gran is None or not isinstance(gran, timedelta):
-        gran = timedelta(hours=1)
-
+        gran = def_gran
+    elif gran < def_gran:
+        gran = def_gran
     gran = int(gran.total_seconds())
-    num_results = (end - start).total_seconds() / gran
 
-    try:
+    def get_mult(client, product, start, end, gran, sleep_time):
+        df = pd.DataFrame()
+        num_results = (end - start).total_seconds() / gran
         if num_results > 200:
             overflow = num_results % 200
             num_results -= overflow
             num_reqs = int(num_results / 200)
 
             dt = timedelta(seconds=gran)
-            print('{} requests, time per request: {}'.format(num_reqs, dt))
+            print('{} requests\ndt: {}\ntotal: {}'.format(num_reqs + 1, dt, dt * 200))
 
             temp_end = start + (200 * dt)
             for i in range(num_reqs):
                 print(start.strftime('%Y-%m-%d %H:%M:%S'))
-                # print(temp_end.strftime('%Y-%m-%d %H:%M:%S'))
                 values = client.get_product_historic_rates(product,
                                                            granularity=gran,
                                                            start=start.isoformat(),
                                                            end=temp_end.isoformat())
-                df = pd.concat([df, pd.DataFrame(values)])
+                if not isinstance(values, dict):
+                    df = pd.concat([df, pd.DataFrame(values)])
+                    start = temp_end
+                    temp_end += (200 * dt)
 
-                start = temp_end
-                temp_end += (200 * dt)
-
-                # Needed to avoid hitting the rate limit
-                if num_reqs > 5:
-                    time.sleep(sleep_time)
+                    # Needed to avoid hitting the rate limit
+                    if num_reqs > 5:
+                        time.sleep(sleep_time)
+                else:
+                    print(values)
             temp_end = end
             values = client.get_product_historic_rates(product,
                                                        granularity=gran,
@@ -155,22 +177,44 @@ def get_value_history(client, product, start, end=None, gran=None, sleep_time=.5
                                                        end=temp_end.isoformat())
             df = pd.concat([df, pd.DataFrame(values)])
         else:
-            df = pd.DataFrame(
-                client.get_product_historic_rates(product,
-                                                  granularity=gran,
-                                                  start=start.isoformat(),
-                                                  end=end.isoformat()))
-
-        df.columns = ['time', 'low', 'high', 'open', 'close', 'volume']
-        df['time'] = df['time'].apply(datetime.fromtimestamp)
-        df = df.set_index('time')
-        df = df.sort_index(axis=0)
-        return df
-    except ValueError as e:
-                print(e, type(values))
-                if isinstance(values, list):
-                    print('length: {}'.format(len(values)))
+            values = client.get_product_historic_rates(product,
+                                                       granularity=gran,
+                                                       start=start.isoformat(),
+                                                       end=end.isoformat())
+            if not isinstance(values, dict):
+                df = pd.DataFrame(values)
+            else:
                 print(values)
+
+        if not df.empty:
+            df.columns = ['time', 'low', 'high', 'open', 'close', 'volume']
+            df['time'] = df['time'].apply(datetime.fromtimestamp)
+            df = df.set_index('time')
+            df = df.sort_index(axis=0)
+            return df
+
+    if df.empty:
+        df = get_mult(client, product, start, end, gran, sleep_time)
+    elif start < df.index[0]:
+        print('Filling from\n{}\nto\n{}'.format(start, df.index[0]))
+        df = pd.concat([df,
+                        get_mult(client, product, start, df.index[0], gran, sleep_time)],
+                       axis=0,
+                       join='inner')
+        df = df.sort_index(axis=0)
+
+    time.sleep(sleep_time)
+
+    if end > df.index[-1]:
+        print('Filling from\n{}\nto\n{}'.format(df.index[-1], end))
+        df = pd.concat([df,
+                        get_mult(client, product, df.index[-1], end, gran, sleep_time)],
+                       axis=0,
+                       join='inner')
+        df = df.sort_index(axis=0)
+
+    store_price_data(df, product)
+    return df
 
 
 def get_performance_history(client, holding_row, hour_res=1):
@@ -183,9 +227,16 @@ def store_price_data(data, product, filename='prices.h5'):
     assert isinstance(data, pd.DataFrame), 'data is not a dataframe: {}'.format(type(data))
     assert isinstance(product, str), 'invalid product: {}'.format(type(product))
     assert isinstance(filename, str), 'invalid filename : {}'.format(type(filename))
+    print('storing {} in {}'.format(product, filename))
+    loaded = load_price_data(product, filename)
+    if loaded is not None:
+        data = pd.concat([data, loaded],
+                         join='inner',
+                         axis=0)
+        data = data.sort_index()
     p = Path(os.getcwd()) / filename
     product = product.replace('-', '')
-    print('storing {} in {}'.format(product, p))
+    data = data[~data.index.duplicated(keep='first')]
     data.to_hdf(p, product)
 
 
@@ -194,7 +245,6 @@ def load_price_data(product, filename='prices.h5'):
     assert isinstance(filename, str), 'invalid filename : {}'.format(type(filename))
     try:
         df = pd.read_hdf(filename, product.replace('-', ''))
-        print('loaded {} from {}'.format(product, filename))
         return df
     except KeyError as e:
         print('{}} not found'.format(product))
@@ -209,8 +259,9 @@ if __name__ == '__main__':
         ac = get_auth_client()
         print(ac.get_time())
         prod = 'BTC-USD'
-        df = get_value_history(ac, prod, datetime.now() - timedelta(days=60), gran=timedelta(hours=1))
-        print(df)
-        store_price_data(df, prod)
-        print(check_for_price_data(prod).info())
+        df = get_value_history(ac, prod, datetime.now() - timedelta(days=90), gran=timedelta(hours=1))
+        df = load_price_data(prod)
+        if df is not None:
+            print('Total data:')
+            print(df.info())
     main()
