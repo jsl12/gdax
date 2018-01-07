@@ -214,14 +214,42 @@ def get_value_history(client, product, start, end=None, gran=None, sleep_time=.5
         df = df.sort_index(axis=0)
 
     store_price_data(df, product)
+    df = df[~df.index.duplicated(keep='first')]
     return df
 
 
-def get_performance_history(client, holding_row, hour_res=1):
+def get_holding_history(client, holding_row, hour_res=1):
     df = get_value_history(client, holding_row.product_id, holding_row.name[1], gran=timedelta(hours=hour_res))
     df = df[df.index > holding_row.name[1]]
     df = df * holding_row.amount
     return df
+
+
+def get_portfolio_history(client, hour_res=1):
+    # Returns a DataFrame with the high, low, close data of the total
+    # value of all the holdings.
+
+    # Gets the account DataFrame to see what all the holdings are
+    dfacc = get_account_df(client)
+    holdings = slice_holdings(get_history_df(client, get_account_df(client)))
+
+    # A DataFrame will be created for the history of each holding and kept in a list
+    # idx is a running list of all the indexes
+    dfs = []
+    idx = pd.Index([])
+    for i, row in holdings.iterrows():
+        new = get_value_history(client, row.product_id, i[1])
+        new = new[new.index > i[1]] * row.amount
+        idx = idx.union(new.index)
+        dfs.append(new)
+
+    # Reindexes all the DataFrames with idx, so they'll all have the same indices
+    # Indices that didn't exist in a DataFrame will be from before
+    res = dfs[0].reindex(idx).fillna(0)
+    for df in dfs[1:]:
+        df = df.reindex(idx).fillna(0)
+        res = res.add(df)
+    return res
 
 
 def store_price_data(data, product, filename='prices.h5'):
@@ -258,11 +286,18 @@ def load_price_data(product, filename='prices.h5'):
 if __name__ == '__main__':
     def main():
         ac = get_auth_client()
-        print(ac.get_time())
-        prod = 'BTC-USD'
-        df = get_value_history(ac, prod, datetime.now() - timedelta(days=90), gran=timedelta(hours=1))
-        df = load_price_data(prod)
+        # print(ac.get_time())
+        # prod = 'BTC-USD'
+        # df = get_portfolio_history(ac)
+        # if df is not None:
+        #     print('Total data:')
+        #     print(df.info())
+
+        df = get_principal_history(ac)
         if df is not None:
-            print('Total data:')
-            print(df.info())
+            print('Principal History')
+            print(df.head())
+
+        # from gdax_sim import *
+        # sim_hist = 
     main()
