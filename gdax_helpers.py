@@ -66,47 +66,9 @@ def get_history_df(client, account_df):
     df = pd.concat([df.drop(['details'], axis=1), df['details'].apply(pd.Series)], axis=1)
 
     # Add the payment column
-    df = add_payment_col(df)
+    # df = add_payment_col(df)
+    # ^ Throwing an error for some reason?
     return df
-
-
-def add_payment_col(df):
-    holdings = slice_holdings(df)
-    holdings['payment'] = [findpayment(df, row) for i, row in holdings.iterrows()]
-    df['payment'] = holdings['payment']
-    return df
-
-
-def slice_holdings(df):
-    holdings = df.drop('USD', level=0)
-    holdings = holdings[holdings['amount'] > 0]
-    return holdings
-
-
-def get_value_df(client, df):
-    holdings = slice_holdings(df)
-    holdings['price'] = [client.get_product_ticker(row.product_id)['price'] for i, row in holdings.iterrows()]
-    holdings['price'] = pd.to_numeric(holdings['price'])
-    holdings['value'] = holdings['price'] * holdings['amount']
-    holdings['abs_gain'] = holdings['payment'] + holdings['value']
-    holdings['gain_rate'] = (holdings['abs_gain'] / (-holdings['payment'])) * 100
-    return holdings
-
-
-def findpayment(df, holding):
-    return df[df.trade_id == holding.trade_id].loc['USD'].amount.sum()
-
-
-def time_series(start, end, n):
-    # Like range(), but for time series
-    t = end - start
-    s = t.total_seconds() / n
-    dt = timedelta(seconds=s)
-    res = [start]
-    for i in range(n - 1):
-        res.append(res[-1] + dt)
-    res.append(end)
-    return res
 
 
 def round_time(time):
@@ -116,6 +78,8 @@ def round_time(time):
 
 
 def get_value_history(client, product, start, end=None, gran=None, sleep_time=.5, load=True):
+    # Either loads existing data and/or fetches new data to cover the time period designated by start and end
+
     # Check for existing data
     if load:
         df = load_price_data(product)
@@ -215,41 +179,83 @@ def get_value_history(client, product, start, end=None, gran=None, sleep_time=.5
 
     store_price_data(df, product)
     df = df[~df.index.duplicated(keep='first')]
-    return df
+    return df[df.index > start]
 
 
-def get_holding_history(client, holding_row, hour_res=1):
-    df = get_value_history(client, holding_row.product_id, holding_row.name[1], gran=timedelta(hours=hour_res))
-    df = df[df.index > holding_row.name[1]]
-    df = df * holding_row.amount
-    return df
+def get_holding_history(client, hour_res=1):
+    return slice_holdings(get_history_df(client, get_account_df(client)))
 
 
-def get_portfolio_history(client, hour_res=1):
-    # Returns a DataFrame with the high, low, close data of the total
-    # value of all the holdings.
+def slice_holdings(df):
+    holdings = df.drop('USD', level=0)
+    return holdings
 
-    # Gets the account DataFrame to see what all the holdings are
-    dfacc = get_account_df(client)
-    holdings = slice_holdings(get_history_df(client, get_account_df(client)))
 
-    # A DataFrame will be created for the history of each holding and kept in a list
-    # idx is a running list of all the indexes
-    dfs = []
-    idx = pd.Index([])
+def findpayment(df, holding):
+    return df[df.trade_id == holding.trade_id].loc['USD'].amount.sum()
+
+
+def get_portfolio_history(client, type='rate', hour_res=1):
+    # Returns a dictionary with keys of product_ids and values of DataFrames
+    # that contain the high, low, close, etc. data
+
+    dfhist = get_history_df(client, get_account_df(client)).sort_index()
+
+    # Gets the total histories of all the holdings
+    holdings = slice_holdings(dfhist)
+
+    # Adds the payment column for the holdings, so that the principal series can be calculated
     for i, row in holdings.iterrows():
-        new = get_value_history(client, row.product_id, i[1])
-        new = new[new.index > i[1]] * row.amount
-        idx = idx.union(new.index)
-        dfs.append(new)
+        pymt = -findpayment(dfhist, row)
+        dfhist.loc[i, 'payment'] = pymt
 
-    # Reindexes all the DataFrames with idx, so they'll all have the same indices
-    # Indices that didn't exist in a DataFrame will be from before
-    res = dfs[0].reindex(idx).fillna(0)
-    for df in dfs[1:]:
-        df = df.reindex(idx).fillna(0)
-        res = res.add(df)
-    return res
+    # Calculates the principal series
+    prin = dfhist.payment.dropna().cumsum().reset_index(level=0).drop('level_0', axis='columns').iloc[:, 0]
+
+    # Find the set of unique product_ids
+    prods = set(holdings['product_id'].values)
+
+    # Makes a dictionary where the key is the product_id and the value
+    # is a DataFrame of the low, high, close, etc. values that starts at the
+    # time of the earliest holding of that product_id
+    prod_values = {}
+    for p in prods:
+        start = holdings[holdings['product_id'] == p].index[0][1]
+        print('{} Starting {}'.format(p, start))
+        prod_values[p] = get_value_history(client, p, start=start)
+
+    # Gets a master index of all the prices
+    idx = pd.Index([])
+    for p in prod_values:
+        idx = idx.union(prod_values[p].index)
+
+    # Reindex all the DataFrames in prod_values
+    prod_values = {p: prod_values[p].reindex(idx).fillna(0) for p in prod_values}
+
+    # Creates a dictionary of the balance series for each product_id
+    balances = {p: holdings[holdings.loc[:, 'product_id'] == p].loc[:, 'balance'] for p in prods}
+
+    # Reindexes the dictionary values to include all the values from idx
+    for p, val in balances.items():
+        balances[p] = balances[p].reset_index(level=0)
+        balances[p] = balances[p].drop('level_0', axis='columns')
+        balances[p] = balances[p].reindex(idx, method='pad').fillna(0)
+        balances[p] = balances[p]['balance']
+
+    # Multiply the DataFrames in prod_values by the Series in balances
+    for p in prod_values:
+        prod_values[p] = prod_values[p].drop('volume', axis='columns')
+        prod_values[p] = prod_values[p].multiply(balances[p], axis=0)
+
+    # Add all the DataFrames together
+    res = prod_values[list(prods)[0]]
+    for p in list(prods)[1:]:
+        res = res.add(prod_values[p])
+
+    # Reindex the principal series
+    prin = prin.reindex(idx, method='pad')
+
+    return prin, res
 
 
 def store_price_data(data, product, filename='prices.h5'):
@@ -293,11 +299,6 @@ if __name__ == '__main__':
         #     print('Total data:')
         #     print(df.info())
 
-        df = get_principal_history(ac)
-        if df is not None:
-            print('Principal History')
-            print(df.head())
-
-        # from gdax_sim import *
-        # sim_hist = 
+        res = get_portfolio_history(ac)
+        print(res)
     main()
