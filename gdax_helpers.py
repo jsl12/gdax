@@ -182,15 +182,6 @@ def get_value_history(client, product, start, end=None, gran=None, sleep_time=.5
     return df[df.index > start]
 
 
-def get_holding_history(client, hour_res=1):
-    return slice_holdings(get_history_df(client, get_account_df(client)))
-
-
-def slice_holdings(df):
-    holdings = df.drop('USD', level=0)
-    return holdings
-
-
 def findpayment(df, holding):
     return df[df.trade_id == holding.trade_id].loc['USD'].amount.sum()
 
@@ -202,7 +193,7 @@ def get_portfolio_history(client, type='rate', hour_res=1):
     dfhist = get_history_df(client, get_account_df(client)).sort_index()
 
     # Gets the total histories of all the holdings
-    holdings = slice_holdings(dfhist)
+    holdings = dfhist.drop('USD', level=0)
 
     # Adds the payment column for the holdings, so that the principal series can be calculated
     for i, row in holdings.iterrows():
