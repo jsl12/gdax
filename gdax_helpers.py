@@ -223,6 +223,9 @@ def get_portfolio_history(client, type='rate', hour_res=1):
     # Reindex all the DataFrames in prod_values
     prod_values = {p: prod_values[p].reindex(idx).fillna(0) for p in prod_values}
 
+    # Reindex the principal series
+    prin = prin.reindex(idx, method='pad')
+
     # Creates a dictionary of the balance series for each product_id
     balances = {p: holdings[holdings.loc[:, 'product_id'] == p].loc[:, 'balance'] for p in prods}
 
@@ -239,14 +242,13 @@ def get_portfolio_history(client, type='rate', hour_res=1):
         prod_values[p] = prod_values[p].multiply(balances[p], axis=0)
 
     # Add all the DataFrames together
-    res = prod_values[list(prods)[0]]
+    prod_values['total'] = prod_values[list(prods)[0]]
     for p in list(prods)[1:]:
-        res = res.add(prod_values[p])
+        prod_values['total'] = prod_values['total'].add(prod_values[p])
 
-    # Reindex the principal series
-    prin = prin.reindex(idx, method='pad')
+    prod_values['principal'] = prin
 
-    return prin, res
+    return prod_values
 
 
 def store_price_data(data, product, filename='prices.h5'):
