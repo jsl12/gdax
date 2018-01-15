@@ -1,4 +1,5 @@
 import pandas as pd
+import numpy as np
 import os
 from pathlib import Path
 import gdax
@@ -107,17 +108,18 @@ def get_value_history(client, product, start, end=None, gran=None, sleep_time=.5
     gran = int(gran.total_seconds())
 
     def get_mult(client, product, start, end, gran, sleep_time):
+        MAX_RESULTS = 350
         df = pd.DataFrame()
         num_results = (end - start).total_seconds() / gran
-        if num_results > 200:
-            overflow = num_results % 200
+        if num_results > MAX_RESULTS:
+            overflow = num_results % MAX_RESULTS
             num_results -= overflow
-            num_reqs = int(num_results / 200)
+            num_reqs = int(num_results / MAX_RESULTS)
 
             dt = timedelta(seconds=gran)
-            print('{} requests\ndt: {}\ntotal: {}'.format(num_reqs + 1, dt, dt * 200))
+            print('{} requests\ndt: {}\ntotal: {}'.format(num_reqs + 1, dt, dt * MAX_RESULTS))
 
-            temp_end = start + (200 * dt)
+            temp_end = start + (MAX_RESULTS * dt)
             for i in range(num_reqs):
                 print(start.strftime('%Y-%m-%d %H:%M:%S'))
                 values = client.get_product_historic_rates(product,
@@ -127,7 +129,7 @@ def get_value_history(client, product, start, end=None, gran=None, sleep_time=.5
                 if not isinstance(values, dict):
                     df = pd.concat([df, pd.DataFrame(values)])
                     start = temp_end
-                    temp_end += (200 * dt)
+                    temp_end += (MAX_RESULTS * dt)
 
                     # Needed to avoid hitting the rate limit
                     if num_reqs > 5:
@@ -182,32 +184,32 @@ def get_value_history(client, product, start, end=None, gran=None, sleep_time=.5
     return df[df.index > start]
 
 
-def get_portfolio_history(client, type='rate', hour_res=1):
+
+
+def get_portfolio_history(client, dfhist):
     # Returns a dictionary with keys of product_ids and values of DataFrames
     # that contain the high, low, close, etc. data
-
-    dfhist = get_history_df(client, get_account_df(client)).sort_index()
 
     # Gets the total histories of all the holdings
     holdings = dfhist.drop('USD', level=0)
 
-    # Adds the payment column for the holdings, so that the principal series can be calculated
-    for i, row in holdings.iterrows():
-        pymt = -dfhist[dfhist.trade_id == row.trade_id].loc['USD'].amount.sum()
-        dfhist.loc[i, 'payment'] = pymt
-
-    # Calculates the principal series
-    prin = dfhist.payment.dropna().cumsum().reset_index(level=0).drop('level_0', axis='columns').iloc[:, 0]
+    # Calculate the principal series
+    # Principal from payments:
+    prin = pd.concat([
+        slice_principals(dfhist.loc['USD']).amount,
+        get_coin_principals(client, dfhist)]).sort_index().dropna()
+    prin = pd.DataFrame(prin.cumsum())
+    prin.columns = ['principal']
 
     # Find the set of unique product_ids
-    prods = set(holdings['product_id'].values)
+    prods = set(dfhist['product_id'].dropna().values)
 
     # Makes a dictionary where the key is the product_id and the value
     # is a DataFrame of the low, high, close, etc. values that starts at the
     # time of the earliest holding of that product_id
     prod_values = {}
     for p in prods:
-        start = holdings[holdings['product_id'] == p].index[0][1]
+        start = holdings[holdings['product_id'] == p].sort_index().index[0][1]
         print('{} Starting {}'.format(p, start))
         prod_values[p] = get_value_history(client, p, start=start)
 
@@ -215,9 +217,11 @@ def get_portfolio_history(client, type='rate', hour_res=1):
     idx = pd.Index([])
     for p in prod_values:
         idx = idx.union(prod_values[p].index)
+    idx = idx.sort_values()
 
     # Reindex all the DataFrames in prod_values
-    prod_values = {p: prod_values[p].reindex(idx).fillna(0) for p in prod_values}
+    # Needed so that they all have a common index when added
+    prod_values = {p: prod_values[p].reindex(idx, method='pad').fillna(0) for p in prod_values}
 
     # Reindex the principal series
     prin = prin.reindex(idx, method='pad')
@@ -237,14 +241,64 @@ def get_portfolio_history(client, type='rate', hour_res=1):
         prod_values[p] = prod_values[p].drop('volume', axis='columns')
         prod_values[p] = prod_values[p].multiply(balances[p], axis=0)
 
-    # Add all the DataFrames together
+    # Add all the coin DataFrames together
     prod_values['total'] = prod_values[list(prods)[0]]
     for p in list(prods)[1:]:
         prod_values['total'] = prod_values['total'].add(prod_values[p])
 
+    # Makes the USD series to add to the total at the end
+    usd = dfhist.loc['USD'].sort_index().balance
+    usd = usd[~usd.index.duplicated(keep='first')]  # fees cause there to be duplicates indexes
+    usd = usd.reindex(idx, method='pad')
+    prod_values['usd'] = usd
+
+    prod_values['total'] = prod_values['total'].add(usd, axis=0)
+
     prod_values['principal'] = prin
 
     return prod_values
+
+
+def slice_principals(dfhist):
+    res = pd.concat([dfhist[dfhist.loc[:, 'transfer_type'] == 'deposit'],
+                     dfhist[dfhist.loc[:, 'transfer_type'] == 'withdraw']])
+    if 'source' in dfhist.columns:
+        res = pd.concat([res,
+                         dfhist[dfhist.loc[:, 'source'] == 'fork']])
+    return res
+
+
+def coin_deposit_value(client, time, product, amount):
+    # time = time.replace(minute=0,
+    #                     second=0,
+    #                     microsecond=0)
+    # gran = timedelta(seconds=60)
+    # res = client.get_product_historic_rates(product,
+    #                                         granularity=int(gran.total_seconds()),
+    #                                         start=time.isoformat(),
+    #                                         end=(time + gran).isoformat())
+    print('coin_deposit_value'.center(50, '-'))
+    print(time)
+    print(product)
+    print(amount)
+    df = load_price_data(product)
+    if df is not None:
+        res = df[df.index > time].loc[:, 'close'].iloc[0] * amount
+        print(res)
+        return res
+
+
+def get_coin_principals(client, dfhist):
+    # Get the list of coins
+    # ['ETH', 'BTC', 'BCH']
+    coins = list(set(dfhist.index.get_level_values(0).values))
+    coins.remove('USD')
+
+    vals = []
+    for c in coins:
+        df = slice_principals(dfhist.loc[c])
+        vals.extend([(i, coin_deposit_value(client, i, c + '-USD', dw.amount)) for i, dw in df.iterrows()])
+    return pd.Series([val for t, val in vals], index=[t for t, val in vals]).sort_index()
 
 
 def store_price_data(data, product, filename='prices.h5'):
@@ -260,34 +314,37 @@ def store_price_data(data, product, filename='prices.h5'):
         data = data.sort_index()
     p = Path(os.getcwd()) / filename
     product = product.replace('-', '')
-    data = data[~data.index.duplicated(keep='first')]
+    data = data[~data.index.duplicated(keep='first')].sort_index()
     data.to_hdf(p, product)
 
 
 def load_price_data(product, filename='prices.h5'):
     assert isinstance(product, str), 'invalid product: {}'.format(type(product))
     assert isinstance(filename, str), 'invalid filename : {}'.format(type(filename))
+
+    file = Path(os.getcwd()) / filename
+    product = product.replace('-', '')
     try:
-        df = pd.read_hdf(filename, product.replace('-', ''))
+        df = pd.read_hdf(path_or_buf=filename, key=product)
         return df
     except KeyError as e:
         print('{} not found'.format(product))
         pass
     except FileNotFoundError as e:
-        print('{} not found'.format(filename))
+        print('{} not found'.format(file))
         pass
 
 
 if __name__ == '__main__':
     def main():
-        ac = get_auth_client()
-        # print(ac.get_time())
-        # prod = 'BTC-USD'
-        # df = get_portfolio_history(ac)
-        # if df is not None:
-        #     print('Total data:')
-        #     print(df.info())
-
-        res = get_portfolio_history(ac)
-        print(res)
+        client = get_auth_client()
+        # print(client.get_time())
+        # dfhist = get_history_df(client, get_account_df(client))
+        dfhist = pd.read_pickle('dfhist.pickle')
+        res = get_portfolio_history(client, dfhist)
+        print(res.keys())
+        for key in res:
+            print(key)
+            print(res[key].head())
+        # print(type(res))
     main()
