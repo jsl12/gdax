@@ -69,7 +69,7 @@ def get_history_df(client, account_df):
     # Add the payment column
     # df = add_payment_col(df)
     # ^ Throwing an error for some reason?
-    return df
+    return df.sort_index()
 
 
 def round_time(time):
