@@ -231,7 +231,7 @@ def get_portfolio_history(client, dfhist):
 
     # Reindexes the dictionary values to include all the values from idx
     for p, val in balances.items():
-        balances[p] = balances[p].reset_index(level=0)
+        balances[p] = balances[p].reset_index(level=0).sort_index()
         balances[p] = balances[p].drop('level_0', axis='columns')
         balances[p] = balances[p].reindex(idx, method='pad').fillna(0)
         balances[p] = balances[p]['balance']
