@@ -199,7 +199,7 @@ def get_portfolio_history(client, dfhist):
         slice_principals(dfhist.loc['USD']).amount,
         get_coin_principals(client, dfhist)]).sort_index().dropna()
     prin = pd.DataFrame(prin.cumsum())
-    prin.columns = ['principal']
+    prin.columns = ['Total']
 
     # Find the set of unique product_ids
     prods = set(dfhist['product_id'].dropna().values)
@@ -221,7 +221,10 @@ def get_portfolio_history(client, dfhist):
 
     # Reindex all the DataFrames in prod_values
     # Needed so that they all have a common index when added
-    prod_values = {p: prod_values[p].reindex(idx, method='pad').fillna(0) for p in prod_values}
+    prod_values = {p: prod_values[p].reindex(idx, method='pad').fillna(0) for p in prods}
+
+    # Take out only the close column
+    prod_values = {p: prod_values[p].loc[:, 'close'] for p in prods}
 
     # Reindex the principal series
     prin = prin.reindex(idx, method='pad')
@@ -230,33 +233,31 @@ def get_portfolio_history(client, dfhist):
     balances = {p: holdings[holdings.loc[:, 'product_id'] == p].loc[:, 'balance'] for p in prods}
 
     # Reindexes the dictionary values to include all the values from idx
-    for p, val in balances.items():
+    for p in prods:
         balances[p] = balances[p].reset_index(level=0).sort_index()
         balances[p] = balances[p].drop('level_0', axis='columns')
         balances[p] = balances[p].reindex(idx, method='pad').fillna(0)
         balances[p] = balances[p]['balance']
 
-    # Multiply the DataFrames in prod_values by the Series in balances
-    for p in prod_values:
-        prod_values[p] = prod_values[p].drop('volume', axis='columns')
-        prod_values[p] = prod_values[p].multiply(balances[p], axis=0)
-
-    # Add all the coin DataFrames together
-    prod_values['total'] = prod_values[list(prods)[0]]
-    for p in list(prods)[1:]:
-        prod_values['total'] = prod_values['total'].add(prod_values[p])
+    # Combines the Value and Balance series
+    res = {}
+    for p in prods:
+        res[p] = pd.DataFrame({'Value': prod_values[p],
+                               'Balance': balances[p]})
+        res[p]['Total'] = res[p]['Value'] * res[p]['Balance']
 
     # Makes the USD series to add to the total at the end
     usd = dfhist.loc['USD'].sort_index().balance
     usd = usd[~usd.index.duplicated(keep='first')]  # fees cause there to be duplicates indexes
     usd = usd.reindex(idx, method='pad')
-    prod_values['usd'] = usd
+    res['USD'] = pd.DataFrame({'Total': usd})
 
-    prod_values['total'] = prod_values['total'].add(usd, axis=0)
+    res['Total'] = pd.DataFrame({p: res[p].loc[:, 'Total'] for p in prods})
+    res['Total']['USD'] = res['USD']['Total']
+    res['Total']['Total'] = res['Total'].sum(axis=1)
+    res['Total']['Principal'] = prin
 
-    prod_values['principal'] = prin
-
-    return prod_values
+    return res
 
 
 def slice_principals(dfhist):
