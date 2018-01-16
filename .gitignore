@@ -6,3 +6,8 @@ __pycache__/api_key.cpython-36.pyc
 .ipynb_checkpoints/*
 *.pyc
 api_key_sb.py
+debug.py
+dfhist.pickle
+GDAX Testing - Simulation.ipynb
+GDAX Testing.ipynb
+GDAX Testing.ipynb
